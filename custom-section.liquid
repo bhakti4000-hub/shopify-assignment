@@ -1,0 +1,342 @@
+<section class="page-width">
+<div id="filter-bar" style="margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+  <select id="filter-tag">
+    <option value="">All categories</option>
+  </select>
+  <select id="sort-select">
+    <option value="">Default</option>
+    <option value="price-asc">Price: Low to High</option>
+    <option value="price-desc">Price: High to Low</option>
+    <option value="title-asc">Name: A-Z</option>
+    <option value="title-desc">Name: Z-A</option>
+  </select>
+  <button id="clear-filters">Clear filters</button>
+</div>
+
+<div id="product-grid">
+  <div class="grid" id="grid-container"></div>
+</div>
+
+<div id="loader">Loading...</div>
+</section>
+
+<script>
+const collectionHandle = "{{ section.settings.collection }}";
+
+if (window.location.search.includes('sort_by') || window.location.search.includes('filter')) {
+  console.log("Shopify default sorting/filtering active");
+} else {
+
+let currentPage = 1;
+let loading = false;
+let allFeatured = [];
+let allNormal = [];
+let displayedIds = new Set();
+let featuredComplete = false;
+let activeTag = '';
+let activeSort = '';
+
+const grid = document.getElementById('grid-container');
+const loader = document.getElementById('loader');
+const filterTag = document.getElementById('filter-tag');
+const sortSelect = document.getElementById('sort-select');
+const clearBtn = document.getElementById('clear-filters');
+
+const allTagsSet = new Set();
+
+function populateTagFilter() {
+  filterTag.innerHTML = '<option value="">All categories</option>';
+  
+  [...allTagsSet]
+    .filter(t => t !== 'featured')
+    .sort()
+    .forEach(tag => {
+      const opt = document.createElement('option');
+      opt.value = tag;
+      opt.textContent = tag.charAt(0).toUpperCase() + tag.slice(1);
+      filterTag.appendChild(opt);
+    });
+}
+
+async function fetchProducts(page) {
+  if (loading) return;
+  loading = true;
+  loader.style.display = 'block';
+
+  try {
+    const limit = page === 1 ? 50 : 20;
+    const res = await fetch(`/collections/${collectionHandle}/products.json?limit=${limit}&page=${page}`);
+    const data = await res.json();
+
+    if (!data.products.length) {
+      loader.innerText = "No more products";
+      loading = false;
+      return;
+    }
+
+    data.products.forEach(product => {
+      if (displayedIds.has(product.id)) return;
+      displayedIds.add(product.id);
+
+      const tags = product.tags.map(t => t.toLowerCase().trim());
+
+      tags.forEach(t => allTagsSet.add(t));
+
+      if (tags.includes('featured') && allFeatured.length < 15) {
+        allFeatured.push(product);
+      } else {
+        allNormal.push(product);
+      }
+    });
+
+    populateTagFilter();
+
+    if (!featuredComplete) {
+      if (allFeatured.length < 15) {
+        currentPage++;
+        loading = false;
+        await fetchProducts(currentPage);
+        return;
+      } else {
+        featuredComplete = true;
+      }
+    }
+
+    renderProducts();
+
+  } catch (err) {
+    console.error(err);
+  }
+
+  loading = false;
+  loader.style.display = 'none';
+}
+
+function filterPool(pool) {
+  if (!activeTag) return [...pool];
+  return pool.filter(p =>
+    p.tags.map(t => t.toLowerCase().trim()).includes(activeTag)
+  );
+}
+
+function sortPool(pool) {
+  const sorted = [...pool];
+  switch (activeSort) {
+    case 'price-asc':
+      sorted.sort((a, b) => parseFloat(a.variants[0].price) - parseFloat(b.variants[0].price));
+      break;
+    case 'price-desc':
+      sorted.sort((a, b) => parseFloat(b.variants[0].price) - parseFloat(a.variants[0].price));
+      break;
+    case 'title-asc':
+      sorted.sort((a, b) => a.title.localeCompare(b.title));
+      break;
+    case 'title-desc':
+      sorted.sort((a, b) => b.title.localeCompare(a.title));
+      break;
+  }
+  return sorted;
+}
+
+function renderProducts() {
+  grid.innerHTML = '';
+
+  const filteredFeatured = sortPool(filterPool(allFeatured));
+  const filteredNormal   = sortPool(filterPool(allNormal));
+
+  filteredFeatured.slice(0, 15).forEach(p => grid.appendChild(createCard(p)));
+
+  filteredNormal.slice(0, 20).forEach(p => grid.appendChild(createCard(p)));
+
+  if (filteredFeatured.length === 0 && filteredNormal.length === 0) {
+    grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;padding:40px;color:var(--color-foreground,#555)">No products match this filter.</p>';
+  }
+}
+
+function appendMoreProducts() {
+  const filteredNormal = sortPool(filterPool(allNormal));
+  let count = 0;
+
+  filteredNormal.forEach(p => {
+    if (count >= 20) return;
+    if (!document.querySelector(`[data-id="${p.id}"]`)) {
+      grid.appendChild(createCard(p));
+      count++;
+    }
+  });
+}
+
+function createCard(product) {
+  const div = document.createElement('div');
+  div.className = 'card reveal';
+  div.setAttribute('data-id', product.id);
+
+  const image = product.images.length ? product.images[0].src : '';
+  const tagsList = product.tags && product.tags.length > 0 ? product.tags.join(', ') : '';
+
+  div.innerHTML = `
+    <p class="product-tags">${tagsList}</p>
+    <a href="/products/${product.handle}">
+      <img src="${image}" alt="${product.title}" loading="lazy" />
+      <h3>${product.title}</h3>
+      <p>₹${product.variants[0].price}</p>
+    </a>
+  `;
+  return div;
+}
+
+filterTag.addEventListener('change', () => {
+  activeTag = filterTag.value;
+  renderProducts();
+});
+
+sortSelect.addEventListener('change', () => {
+  activeSort = sortSelect.value;
+  renderProducts();
+});
+
+clearBtn.addEventListener('click', () => {
+  activeTag = '';
+  activeSort = '';
+  filterTag.value = '';
+  sortSelect.value = '';
+  renderProducts();
+});
+
+window.addEventListener('scroll', () => {
+  if (!featuredComplete) return;
+  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 200) {
+    currentPage++;
+    fetchProducts(currentPage).then(() => {
+      appendMoreProducts();
+    });
+  }
+});
+
+fetchProducts(currentPage);
+
+}
+</script>
+
+<style>
+#filter-bar select,
+#filter-bar button {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+#filter-bar select:focus,
+#filter-bar button:hover {
+  border-color: #00c9d4;
+  outline: none;
+}
+
+*:focus-visible {
+    outline: unset !important;
+    outline-offset: unset !important;
+    box-shadow: unset !important;
+}   
+
+#clear-filters {
+  background: #f5f5f5;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+}
+
+.card {
+  border: 1px solid #eee;
+  padding: 10px;
+  text-align: center;
+  transition: 0.3s;
+}
+
+.card:hover {
+  transform: translateY(-5px);
+}
+
+.card img {
+  width: 100%;
+  height: auto;
+  max-height: 250px;
+  object-fit: contain;
+  min-height: 250px;
+}
+
+.card p {
+  margin: 0px 0px 10px;
+}
+
+.card a {
+  text-decoration: none;
+  color: #000;
+}
+
+#loader {
+  text-align: center;
+  padding: 20px;
+  display: none;
+}
+
+p.product-tags {
+  margin: 0px 0px 10px;
+  background: #00f5ff3d;
+}
+
+h3 {
+  margin: 10px 0px 10px;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.card.reveal {
+  animation: fadeInUp 0.5s ease forwards;
+}
+
+.card {
+  opacity: 0;
+}
+
+@media screen and (max-width: 749px) {
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  #filter-bar {
+    flex-direction: column;
+    align-items: unset !important;
+  }
+}
+</style>
+
+{% schema %}
+{
+  "name": "custom section",
+  "settings": [
+    {
+      "type": "header",
+      "content": "Collection"
+    },
+    {
+      "type": "collection",
+      "id": "collection",
+      "label": "Select collection"
+    }
+  ],
+  "presets": [
+    {
+      "name": "custom section"
+    }
+  ]
+}
+{% endschema %}
